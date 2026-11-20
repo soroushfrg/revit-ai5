@@ -19,16 +19,58 @@ jobs:
         run: pip install -r app/requirements.txt pyinstaller
 
       # The exe is only an intermediate file for the installer, so it is not published.
-      # Qt modules the app never imports are excluded to keep the installer small.
+      # Each PyInstaller argument is a separate array item, so a long line cannot break the options.
       - name: Build launcher EXE
-        run: >
-          pyinstaller --noconsole --onefile --clean --name RevitAI
-          --icon app/assets/icon.ico --paths app
-          --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets
-          --exclude-module PySide6.QtWebEngineQuick --exclude-module PySide6.QtWebChannel
-          --exclude-module PySide6.QtQuick --exclude-module PySide6.QtQuickWidgets
-          --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick3D
-          --exclude-module PySide6.QtMultimedia --exclude-module PySide6.QtMultimediaWidgets
-          --exclude-module PySide6.QtCharts --exclude-module PySide6.QtDataVisualization
-          --exclude-module PySide6.QtPdf --exclude-module PySide6.QtPdfWidgets
-          --exclude-module PySide6.Qt3DCore --exclude-module
+        shell: pwsh
+        run: |
+          $excludes = @(
+            "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
+            "PySide6.QtWebChannel", "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtQml",
+            "PySide6.QtQuick3D", "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets",
+            "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtPdf", "PySide6.QtPdfWidgets",
+            "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.QtDesigner", "PySide6.QtSql",
+            "PySide6.QtTest", "PySide6.QtDBus", "PySide6.QtBluetooth", "PySide6.QtNfc",
+            "PySide6.QtSerialPort", "PySide6.QtWebSockets", "PySide6.QtRemoteObjects",
+            "PySide6.QtTextToSpeech", "PySide6.QtPositioning", "PySide6.QtSensors"
+          )
+          $pyArgs = @(
+            "--noconsole", "--onefile", "--clean", "--name", "RevitAI",
+            "--icon", "app/assets/icon.ico", "--paths", "app",
+            "--collect-all", "PySide6", "--collect-all", "shiboken6", "--collect-all", "sounddevice",
+            "--collect-all", "pypdf", "--collect-all", "certifi"
+          )
+          foreach ($m in $excludes) { $pyArgs += @("--exclude-module", $m) }
+          $pyArgs += "launcher.py"
+          pyinstaller @pyArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Read app version
+        id: ver
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path app/version.py -Pattern 'APP_VERSION = "(.+)"').Matches.Groups[1].Value
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=${{ steps.ver.outputs.version }}" installer\RevitAI.iss
+
+      - name: Show installer size
+        shell: pwsh
+        run: |
+          $mb = (Get-Item installer/Output/RevitAI-Setup.exe).Length / 1MB
+          Write-Output ("Installer size: {0:N1} MB" -f $mb)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RevitAI-Setup
+          path: installer/Output/RevitAI-Setup.exe
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: installer/Output/RevitAI-Setup.exe
